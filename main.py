@@ -1,105 +1,61 @@
-from typing import Dict, List, Sequence
+import pyterrier as pt
+import pandas as pd
+import shutil
+import json
+import csv
 
-from whoosh import qparser
-from whoosh.index import create_in
-from whoosh.fields import *
-from whoosh.qparser import MultifieldParser
-from whoosh.filedb.filestore import RamStorage
-from whoosh.analysis import StemmingAnalyzer
+pt.init()
 
-import json, csv
+TOP_K = 100
 
-#
-# Simple example indexing to an in-memory index and performing a search
-# across multiple fields and returning an array of highlighted results.
-#
-# One lacking feature of Whoosh is the no-analyze option. In this example
-# the SearchEngine modifies the given schema and adds a RAW field. When doc
-# are added to the index only stored fields in the schema are passed to Whoosh
-# along with json encoded version of the whole doc stashed in the RAW field.
-#
-# On query the <Hit> in the result is ignored and instead the RAW field is
-# decoded containing any extra fields present in the original document. 
-#
+output = []
 
-TOP_K = 10
+folder_path = 'index'  # Replace with the actual folder path
+# shutil.rmtree(folder_path)
 
-class SearchEngine:
+jsonl_file = "files/corpus.jsonl"
 
-    def __init__(self, schema):
-        self.schema = schema
-        schema.add('raw', TEXT(stored=True))
-        self.ix = RamStorage().create_index(self.schema)
+# def iter_file(filename):
+#   with open(filename, 'rt') as file:
+#     for l in file:
+#       # assumes that each line contains 'docno', 'text' attributes
+#       # yields a dictionary for each json line
+#       obj = json.loads(l)
+#       obj["docno"] = obj["id"]
+#       yield obj
 
-    def index_documents(self, docs: Sequence):
-        writer = self.ix.writer()
-        for doc in docs:
-            d = {k: v for k,v in doc.items() if k in self.schema.stored_names()}
-            d['raw'] = json.dumps(doc) # raw version of all of doc
-            writer.add_document(**d)
-        writer.commit(optimize=True)
+# indexref4 = pt.IterDictIndexer("./index", meta={'docno': 20, 'text': 4096}).index(iter_file(jsonl_file))
 
-    def get_index_size(self) -> int:
-        return self.ix.doc_count_all()
+# Load the index
+index_path = './index'  # Replace with the actual index folder path
+index = pt.IndexFactory.of(index_path)
 
-    def query(self, q: str, fields: Sequence, highlight: bool=True) -> List[Dict]:
-        search_results = []
-        with self.ix.searcher() as searcher:
-            og = qparser.OrGroup.factory(0.9)
-            results = searcher.search(MultifieldParser(fields, schema=self.schema, group=og).parse(q))
-            
-            for r in results:
-                d = json.loads(r['raw'])
-                if highlight:
-                    for f in fields:
-                        if r[f] and isinstance(r[f], str):
-                            d[f] = r.highlights(f) or r[f]
+tokenizer = pt.autoclass("org.terrier.indexing.tokenisation.Tokeniser").getTokeniser()
+def strip_markup(text):
+    return " ".join(tokenizer.getTokens(text))
 
-                search_results.append(d)
+with open("files/test_queries.csv", "r") as csvfile:
+    reader = csv.DictReader(csvfile)
+    for row in reader:
+        query_id = row["QueryId"]
+        query = row["Query"]
+        entity_ids = []
 
-        return search_results
+        # Retrieve documents based on the query
+        retrieval = pt.BatchRetrieve(index, controls={"wmodel": "BM25"})
+        print(strip_markup(query))
+        results = retrieval.search(strip_markup(query))
 
-if __name__ == '__main__':
-    docs = []
-    output = []
+        # Print the document IDs and scores
+        for doc_id, score in zip(results["docno"], results["score"]):
+            print(f"Document ID: {doc_id}, Score: {score}")
+            entity_ids.append(doc_id)
 
-    with open("files/corpus.jsonl", "r") as file:
-        for line in file:
-            json_obj = json.loads(line)
-            docs.append(json_obj)
+        if len(entity_ids) > 0:
+            for i in range(min(TOP_K, len(entity_ids))):
+                output.append({"QueryId": query_id, "EntityId": entity_ids[i]})
 
-    schema = Schema(
-        id=ID(stored=True),
-        title=TEXT(stored=True),
-        text=TEXT(stored=True, analyzer=StemmingAnalyzer()),
-        keywords=KEYWORD(stored=True)
-    )
-
-    engine = SearchEngine(schema)
-    engine.index_documents(docs)
-
-    print(f"indexed {engine.get_index_size()} documents")
-
-    fields_to_search = ["title", "text", "keywords"]
-
-    with open("files/test_queries.csv", "r") as csvfile:
-        reader = csv.DictReader(csvfile)
-        for row in reader:
-            query_id = row["QueryId"]
-            query = row["Query"]
-            entity_ids = []
-
-            results = engine.query(query, fields_to_search, highlight=True)
-        
-            #pecorre results até no máximo os TOP_K primeiro
-            for i in range(min(TOP_K, len(results))):
-                entity_ids.append(results[i]["id"])
-                if results[i]["id"]:
-                    output.append({"QueryId": query_id, "EntityId": results[i]["id"]})
-
-        output_file = "output.csv"
-
-with open(output_file, "w", newline="") as csvfile:
+with open('output_file.csv', "w", newline="") as csvfile:
     fieldnames = ["QueryId", "EntityId"]
     writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
@@ -107,4 +63,3 @@ with open(output_file, "w", newline="") as csvfile:
     writer.writerows(output)
 
 print("-"*70)
-                
