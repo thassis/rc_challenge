@@ -34,6 +34,10 @@ tokenizer = pt.autoclass("org.terrier.indexing.tokenisation.Tokeniser").getToken
 def strip_markup(text):
     return " ".join(tokenizer.getTokens(text))
 
+
+# Retrieve documents based on the query
+retrieval = pt.BatchRetrieve(index, wmodel="TF_IDF")
+
 with open("files/test_queries.csv", "r") as csvfile:
     reader = csv.DictReader(csvfile)
     for row in reader:
@@ -41,8 +45,6 @@ with open("files/test_queries.csv", "r") as csvfile:
         query = row["Query"]
         entity_ids = []
 
-        # Retrieve documents based on the query
-        retrieval = pt.BatchRetrieve(index, controls={"wmodel": "BM25"})
         print(strip_markup(query))
         results = retrieval.search(strip_markup(query))
 
